@@ -1,0 +1,1 @@
+dotnet publish --output bin/Release/net5.0/Publish --framework net5.0 --runtime osx.11.0-x64 --configuration Release --no-self-contained

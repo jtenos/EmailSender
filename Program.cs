@@ -1,68 +1,54 @@
-﻿using Microsoft.Extensions.Configuration;
-using Newtonsoft.Json;
-using System.IO;
-using System.Net;
-using System.Net.Mail;
+﻿using System.IO;
 using System.Reflection;
-using System.Threading.Tasks;
+using System.Text.Json;
+using EmailSender;
+using MailKit.Net.Smtp;
+using MailKit.Security;
+using Microsoft.Extensions.Configuration;
+using MimeKit;
 
-namespace EmailSender
+var config = new ConfigurationBuilder()
+    .SetBasePath(Directory.GetCurrentDirectory())
+    .AddJsonFile("appsettings.json")
+    .Build();
+string fileName = Path.Combine(new FileInfo(Assembly.GetExecutingAssembly().Location).Directory!.FullName,
+    args[0]);
+var message = JsonSerializer.Deserialize<Message>(File.ReadAllText(fileName))!;
+
+string host = config["EmailHost"];
+int port = config.GetValue<int>("SmtpPort");
+string userName = config["SmtpUserName"];
+string password = config["SmtpPassword"];
+
+MimeMessage msg = new();
+foreach (var rec in message.Recipients)
 {
-    class Program
-    {
-        static async Task Main(string[] args)
-        {
-            var config = new ConfigurationBuilder()
-                .SetBasePath(Directory.GetCurrentDirectory())
-                .AddJsonFile("appsettings.json")
-                .Build();
-            string fileName = Path.Combine(new FileInfo(Assembly.GetExecutingAssembly().Location).Directory.FullName,
-                args[0]);
-            var message = JsonConvert.DeserializeObject<Message>(File.ReadAllText(fileName));
-
-            using var smtp = new SmtpClient(config["EmailHost"]);
-            int? smtpPort = config.GetValue<int?>("SmtpPort");
-            if (smtpPort.HasValue)
-            {
-                smtp.Port = smtpPort.Value;
-            }
-            int? smtpSecure = config.GetValue<int?>("SmtpSecure");
-            if (smtpSecure.HasValue)
-            {
-                smtp.EnableSsl = smtpSecure == 1;
-            }
-            string? smtpUserName = config["SmtpUserName"];
-            string? smtpPassword = config["SmtpPassword"];
-            if (!string.IsNullOrWhiteSpace(smtpUserName) && !string.IsNullOrWhiteSpace(smtpPassword))
-            {
-                smtp.Credentials = new NetworkCredential(smtpUserName, smtpPassword);
-            }
-
-            var msg = new MailMessage
-            {
-                From = new MailAddress(message.SenderEmail, message.SenderName),
-                Subject = message.Subject,
-                IsBodyHtml = true,
-                Body = message.HtmlBody
-            };
-            foreach (var rec in message.Recipients) { msg.To.Add(new MailAddress(rec.Email, rec.Name)); }
-            await smtp.SendMailAsync(msg).ConfigureAwait(false);
-
-        }
-    }
-
-    public class Message
-    {
-        public string SenderName { get; set; } = default!;
-        public string SenderEmail { get; set; } = default!;
-        public Recipient[] Recipients { get; set; } = default!;
-        public string Subject { get; set; } = default!;
-        public string HtmlBody { get; set; } = default!;
-    }
-
-    public class Recipient
-    {
-        public string Name { get; set; } = default!;
-        public string Email { get; set; } = default!;
-    }
+    msg.To.Add(new MailboxAddress(rec.Name, rec.Email));
 }
+msg.From.Add(new MailboxAddress(message.SenderName, message.SenderEmail));
+msg.Subject = message.Subject;
+
+var bodyBuilder = new BodyBuilder();
+bodyBuilder.HtmlBody = message.HtmlBody;
+bodyBuilder.TextBody = message.TextBody;
+
+msg.Body = bodyBuilder.ToMessageBody();
+
+using var emailClient = new SmtpClient();
+
+switch (port)
+{
+    case 25:
+        await emailClient.ConnectAsync(host, port: 25, options: SecureSocketOptions.None);
+        break;
+    case 465:
+        await emailClient.ConnectAsync(host, port, useSsl: true).ConfigureAwait(false);
+        break;
+    case 587:
+        await emailClient.ConnectAsync(host, port, options: SecureSocketOptions.StartTls);
+        break;
+}
+
+await emailClient.AuthenticateAsync(userName, password).ConfigureAwait(false);
+await emailClient.SendAsync(msg).ConfigureAwait(false);
+await emailClient.DisconnectAsync(true).ConfigureAwait(false);
